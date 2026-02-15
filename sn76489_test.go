@@ -461,9 +461,9 @@ func TestSN76489_RunMidFrameWrite(t *testing.T) {
 	}
 }
 
-// TestSN76489_SaveLoadState verifies that saving and loading state preserves
-// all mutable chip state.
-func TestSN76489_SaveLoadState(t *testing.T) {
+// TestSN76489_SerializeDeserialize verifies that serializing and deserializing
+// state preserves all mutable chip state.
+func TestSN76489_SerializeDeserialize(t *testing.T) {
 	chip := New(3579545, 48000, 800, Sega)
 
 	// Set up various state
@@ -482,11 +482,16 @@ func TestSN76489_SaveLoadState(t *testing.T) {
 	// Advance some clocks to get non-trivial internal state
 	chip.GenerateSamples(5000)
 
-	state := chip.SaveState()
+	buf := make([]byte, chip.SerializeSize())
+	if err := chip.Serialize(buf); err != nil {
+		t.Fatal(err)
+	}
 
-	// Create a new chip and load the state
+	// Create a new chip and deserialize the state
 	chip2 := New(3579545, 48000, 800, Sega)
-	chip2.LoadState(state)
+	if err := chip2.Deserialize(buf); err != nil {
+		t.Fatal(err)
+	}
 
 	// Verify all observable state matches
 	for ch := 0; ch < 3; ch++ {
@@ -506,16 +511,22 @@ func TestSN76489_SaveLoadState(t *testing.T) {
 		t.Errorf("NoiseShift: original=0x%04X, loaded=0x%04X", chip.GetNoiseShift(), chip2.GetNoiseShift())
 	}
 
-	// Verify internal state via the State struct
-	state2 := chip2.SaveState()
-	if state != state2 {
-		t.Error("SaveState from loaded chip does not match original SaveState")
+	// Verify round-trip: serialize both and compare byte slices
+	buf2 := make([]byte, chip2.SerializeSize())
+	if err := chip2.Serialize(buf2); err != nil {
+		t.Fatal(err)
+	}
+	for i := range buf {
+		if buf[i] != buf2[i] {
+			t.Errorf("Serialized byte %d differs: original=0x%02X, round-trip=0x%02X", i, buf[i], buf2[i])
+			break
+		}
 	}
 }
 
-// TestSN76489_SaveLoadStateContinuity verifies that generating samples from
-// a loaded state produces identical output to continuing from the original chip.
-func TestSN76489_SaveLoadStateContinuity(t *testing.T) {
+// TestSN76489_SerializeDeserializeContinuity verifies that generating samples from
+// a deserialized state produces identical output to continuing from the original chip.
+func TestSN76489_SerializeDeserializeContinuity(t *testing.T) {
 	chip := New(3579545, 48000, 800, Sega)
 
 	// Set up some audible state
@@ -528,16 +539,21 @@ func TestSN76489_SaveLoadStateContinuity(t *testing.T) {
 	// Generate some initial samples
 	chip.GenerateSamples(5000)
 
-	// Save state
-	state := chip.SaveState()
+	// Serialize state
+	buf := make([]byte, chip.SerializeSize())
+	if err := chip.Serialize(buf); err != nil {
+		t.Fatal(err)
+	}
 
 	// Continue generating on original chip
 	chip.GenerateSamples(10000)
 	origBuf, origCount := chip.GetBuffer()
 
-	// Load state into a new chip and generate the same amount
+	// Deserialize into a new chip and generate the same amount
 	chip2 := New(3579545, 48000, 800, Sega)
-	chip2.LoadState(state)
+	if err := chip2.Deserialize(buf); err != nil {
+		t.Fatal(err)
+	}
 	chip2.GenerateSamples(10000)
 	loadBuf, loadCount := chip2.GetBuffer()
 
@@ -550,6 +566,42 @@ func TestSN76489_SaveLoadStateContinuity(t *testing.T) {
 			t.Errorf("Sample %d differs: original=%f, loaded=%f", i, origBuf[i], loadBuf[i])
 			break
 		}
+	}
+}
+
+// TestSN76489_DeserializeVersionMismatch verifies Deserialize rejects wrong version.
+func TestSN76489_DeserializeVersionMismatch(t *testing.T) {
+	chip := New(3579545, 48000, 800, Sega)
+	buf := make([]byte, chip.SerializeSize())
+	if err := chip.Serialize(buf); err != nil {
+		t.Fatal(err)
+	}
+
+	// Corrupt the version byte
+	buf[0] = 99
+
+	chip2 := New(3579545, 48000, 800, Sega)
+	if err := chip2.Deserialize(buf); err == nil {
+		t.Error("Deserialize should return error for wrong version")
+	}
+}
+
+// TestSN76489_DeserializeShortBuffer verifies Deserialize rejects too-short buffer.
+func TestSN76489_DeserializeShortBuffer(t *testing.T) {
+	chip := New(3579545, 48000, 800, Sega)
+	if err := chip.Deserialize(make([]byte, 10)); err == nil {
+		t.Error("Deserialize should return error for short buffer")
+	}
+	if err := chip.Deserialize(nil); err == nil {
+		t.Error("Deserialize should return error for nil buffer")
+	}
+}
+
+// TestSN76489_SerializeShortBuffer verifies Serialize rejects too-short buffer.
+func TestSN76489_SerializeShortBuffer(t *testing.T) {
+	chip := New(3579545, 48000, 800, Sega)
+	if err := chip.Serialize(make([]byte, 10)); err == nil {
+		t.Error("Serialize should return error for short buffer")
 	}
 }
 
