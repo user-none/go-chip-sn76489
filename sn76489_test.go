@@ -605,18 +605,25 @@ func TestSN76489_SerializeShortBuffer(t *testing.T) {
 	}
 }
 
-// TestSN76489_DefaultGain verifies default gain (0.25) matches old /4.0 behavior
+// TestSN76489_DefaultGain verifies default gain (0.25) matches /4.0 behavior
 func TestSN76489_DefaultGain(t *testing.T) {
 	chip := New(3579545, 48000, 800, Sega)
 
-	// Set channel 0 to max volume
+	// Set channel 0 to max volume and tone register = 1 (highest freq)
 	chip.Write(0x90) // Channel 0 volume = 0 (max)
+	chip.Write(0x81) // Channel 0 tone low nibble = 1
+	chip.Write(0x00) // Channel 0 tone high bits = 0, toneReg[0] = 1
 
-	// With toneOutput[0] = false (initial), channel 0 contributes -volumeTable[0] = -1.0
-	// Other channels silent (volume 0x0F = 0.0)
-	// Expected: (-1.0 + 0 + 0 + 0) * 0.25 = -0.25
+	// Clock 16 times to trigger one internal tick, toggling output HIGH
+	for i := 0; i < 16; i++ {
+		chip.Clock()
+	}
+
+	// toneOutput[0] is now true (high), contributing +volumeTable[0] = +1.0
+	// Other channels silent (volume 0x0F = 0.0), unipolar output = 0
+	// Expected: (1.0 + 0 + 0 + 0) * 0.25 = 0.25
 	sample := chip.Sample()
-	expected := float32(-1.0) * 0.25
+	expected := float32(1.0) * 0.25
 	if math.Abs(float64(sample-expected)) > 0.001 {
 		t.Errorf("Default gain sample: expected %f, got %f", expected, sample)
 	}
@@ -626,8 +633,15 @@ func TestSN76489_DefaultGain(t *testing.T) {
 func TestSN76489_SetGain(t *testing.T) {
 	chip := New(3579545, 48000, 800, Sega)
 
-	// Set channel 0 to max volume
+	// Set channel 0 to max volume and tone register = 1 (highest freq)
 	chip.Write(0x90) // Channel 0 volume = 0 (max)
+	chip.Write(0x81) // Channel 0 tone low nibble = 1
+	chip.Write(0x00) // Channel 0 tone high bits = 0
+
+	// Clock 16 times to toggle output HIGH so Sample() returns non-zero
+	for i := 0; i < 16; i++ {
+		chip.Clock()
+	}
 
 	// Get sample with default gain
 	defaultSample := chip.Sample()
@@ -666,11 +680,15 @@ func TestSN76489_SetGain(t *testing.T) {
 		minCount = count10
 	}
 
-	// Absolute value of each sample in buf10 should be 2x buf05
+	// For non-zero samples in both buffers, buf10 should be 2x buf05.
+	// With unipolar output, samples can be 0 when the channel is LOW,
+	// and the two runs may have different tone phases, so we skip
+	// samples where either buffer is near zero.
+	matched := 0
 	for i := 0; i < minCount; i++ {
 		abs05 := math.Abs(float64(buf05[i]))
 		abs10 := math.Abs(float64(buf10[i]))
-		if abs05 < 0.001 {
+		if abs05 < 0.001 || abs10 < 0.001 {
 			continue
 		}
 		ratio := abs10 / abs05
@@ -678,6 +696,10 @@ func TestSN76489_SetGain(t *testing.T) {
 			t.Errorf("GetBuffer gain ratio at sample %d: expected 2.0, got %f", i, ratio)
 			break
 		}
+		matched++
+	}
+	if matched == 0 {
+		t.Error("No non-zero samples found in both buffers for gain comparison")
 	}
 }
 
@@ -695,7 +717,7 @@ func TestSN76489_GetChannelBuffers(t *testing.T) {
 		t.Fatal("No samples generated")
 	}
 
-	// Channel 0 should have non-zero values (±1.0)
+	// Channel 0 should have non-zero values (+1.0 when high, 0.0 when low)
 	hasNonZero := false
 	for i := 0; i < count; i++ {
 		val := chBufs[0][i]

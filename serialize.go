@@ -6,10 +6,10 @@ import (
 	"math"
 )
 
-const serializeVersion = 1
+const serializeVersion = 2
 
 // SerializeSize is the number of bytes needed to serialize the chip state.
-const SerializeSize = 40
+const SerializeSize = 41
 
 // Serialize writes all mutable chip state into buf in a compact little-endian
 // binary format. Returns an error if len(buf) < SerializeSize. Variant-derived
@@ -33,7 +33,7 @@ func (s *SN76489) Serialize(buf []byte) error {
 	buf[16] = s.noiseReg
 	binary.LittleEndian.PutUint16(buf[17:], s.noiseCounter)
 	binary.LittleEndian.PutUint16(buf[19:], s.noiseShift)
-	buf[21] = boolByte(s.noiseOutput)
+	buf[21] = boolByte(s.noiseToggle)
 	for i := 0; i < 4; i++ {
 		buf[22+i] = s.volume[i]
 	}
@@ -41,6 +41,7 @@ func (s *SN76489) Serialize(buf []byte) error {
 	buf[27] = s.latchedType
 	binary.LittleEndian.PutUint32(buf[28:], uint32(int32(s.clockDivider)))
 	binary.LittleEndian.PutUint64(buf[32:], math.Float64bits(s.clockCounter))
+	buf[40] = boolByte(s.noiseOut)
 	return nil
 }
 
@@ -69,7 +70,7 @@ func (s *SN76489) Deserialize(buf []byte) error {
 	s.noiseReg = buf[16]
 	s.noiseCounter = binary.LittleEndian.Uint16(buf[17:])
 	s.noiseShift = binary.LittleEndian.Uint16(buf[19:])
-	s.noiseOutput = buf[21] != 0
+	s.noiseToggle = buf[21] != 0
 	for i := 0; i < 4; i++ {
 		s.volume[i] = buf[22+i]
 	}
@@ -77,6 +78,7 @@ func (s *SN76489) Deserialize(buf []byte) error {
 	s.latchedType = buf[27]
 	s.clockDivider = int(int32(binary.LittleEndian.Uint32(buf[28:])))
 	s.clockCounter = math.Float64frombits(binary.LittleEndian.Uint64(buf[32:]))
+	s.noiseOut = buf[40] != 0
 	s.bufferPos = 0
 	return nil
 }

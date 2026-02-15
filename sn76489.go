@@ -51,7 +51,8 @@ type SN76489 struct {
 	noiseReg     uint8  // 3-bit: NF1 NF0 FB (shift rate and feedback mode)
 	noiseCounter uint16 // Counter for noise
 	noiseShift   uint16 // LFSR
-	noiseOutput  bool
+	noiseToggle  bool   // Internal toggle (flips every counter period, like tone)
+	noiseOut     bool   // Audio output (captured from LFSR on rising edge of toggle)
 
 	// Volume registers (4-bit, 0=max, 15=off)
 	volume [4]uint8 // 0-2 = tone channels, 3 = noise
@@ -125,7 +126,8 @@ func (s *SN76489) Reset() {
 	s.noiseReg = 0
 	s.noiseCounter = 0
 	s.noiseShift = s.lfsrInitial
-	s.noiseOutput = false
+	s.noiseToggle = false
+	s.noiseOut = false
 	for i := range s.volume {
 		s.volume[i] = 0x0F
 	}
@@ -223,46 +225,51 @@ func (s *SN76489) Clock() {
 			}
 		}
 
-		// Shift LFSR and generate output
-		s.noiseOutput = (s.noiseShift & 1) != 0
+		// Toggle noise state (like tone channels)
+		s.noiseToggle = !s.noiseToggle
 
-		// Calculate feedback bit
-		var feedback uint16
-		if s.noiseReg&0x04 != 0 {
-			// White noise: parity of tapped bits
-			tapped := s.noiseShift & s.whiteNoiseTaps
-			tapped ^= tapped >> 8
-			tapped ^= tapped >> 4
-			tapped ^= tapped >> 2
-			tapped ^= tapped >> 1
-			feedback = (tapped & 1) << s.feedbackShift
-		} else {
-			// Periodic noise: feedback the output bit only (repeating pattern)
-			feedback = (s.noiseShift & 1) << s.feedbackShift
+		// Only shift LFSR and update output on the rising edge,
+		// matching real hardware where the LFSR clocks at half
+		// the counter rate.
+		if s.noiseToggle {
+			s.noiseOut = (s.noiseShift & 1) != 0
+
+			// Calculate feedback bit
+			var feedback uint16
+			if s.noiseReg&0x04 != 0 {
+				// White noise: parity of tapped bits
+				tapped := s.noiseShift & s.whiteNoiseTaps
+				tapped ^= tapped >> 8
+				tapped ^= tapped >> 4
+				tapped ^= tapped >> 2
+				tapped ^= tapped >> 1
+				feedback = (tapped & 1) << s.feedbackShift
+			} else {
+				// Periodic noise: feedback the output bit only (repeating pattern)
+				feedback = (s.noiseShift & 1) << s.feedbackShift
+			}
+
+			s.noiseShift = (s.noiseShift >> 1) | feedback
 		}
-
-		s.noiseShift = (s.noiseShift >> 1) | feedback
 	}
 }
 
-// Sample generates one audio sample
+// Sample generates one audio sample using unipolar output matching
+// real hardware behavior: channels contribute their volume level
+// when output is high, and 0 when low.
 func (s *SN76489) Sample() float32 {
 	var sample float32 = 0
 
-	// Mix tone channels
+	// Mix tone channels (unipolar: high = +vol, low = 0)
 	for i := 0; i < 3; i++ {
 		if s.toneOutput[i] {
 			sample += volumeTable[s.volume[i]]
-		} else {
-			sample -= volumeTable[s.volume[i]]
 		}
 	}
 
-	// Mix noise channel
-	if s.noiseOutput {
+	// Mix noise channel (uses noiseOut captured at LFSR shift time)
+	if s.noiseOut {
 		sample += volumeTable[s.volume[3]]
-	} else {
-		sample -= volumeTable[s.volume[3]]
 	}
 
 	return sample * s.gain
@@ -291,13 +298,13 @@ func (s *SN76489) Run(clocks int) int {
 					if s.toneOutput[ch] {
 						s.channelBuffers[ch][s.bufferPos] = volumeTable[s.volume[ch]]
 					} else {
-						s.channelBuffers[ch][s.bufferPos] = -volumeTable[s.volume[ch]]
+						s.channelBuffers[ch][s.bufferPos] = 0
 					}
 				}
-				if s.noiseOutput {
+				if s.noiseOut {
 					s.channelBuffers[3][s.bufferPos] = volumeTable[s.volume[3]]
 				} else {
-					s.channelBuffers[3][s.bufferPos] = -volumeTable[s.volume[3]]
+					s.channelBuffers[3][s.bufferPos] = 0
 				}
 				s.bufferPos++
 			} else {
@@ -380,4 +387,3 @@ func GetVolumeTable() []float32 {
 func (s *SN76489) GetNoiseShift() uint16 {
 	return s.noiseShift
 }
-
