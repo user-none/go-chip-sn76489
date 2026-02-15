@@ -7,20 +7,16 @@ import (
 )
 
 const serializeVersion = 1
-const sn76489SerializeSize = 40
 
-// SerializeSize returns the number of bytes needed to serialize the chip state.
-// The value is constant and can be used to pre-allocate a reusable buffer.
-func (s *SN76489) SerializeSize() int {
-	return sn76489SerializeSize
-}
+// SerializeSize is the number of bytes needed to serialize the chip state.
+const SerializeSize = 40
 
 // Serialize writes all mutable chip state into buf in a compact little-endian
-// binary format. Returns an error if len(buf) < SerializeSize(). Variant-derived
+// binary format. Returns an error if len(buf) < SerializeSize. Variant-derived
 // constants and audio config are not included — the caller handles those via
 // the New constructor and SetGain.
 func (s *SN76489) Serialize(buf []byte) error {
-	if len(buf) < sn76489SerializeSize {
+	if len(buf) < SerializeSize {
 		return errors.New("sn76489: serialize buffer too small")
 	}
 
@@ -54,7 +50,7 @@ func (s *SN76489) Serialize(buf []byte) error {
 // config are not modified — the caller handles those via the New constructor
 // and SetGain.
 func (s *SN76489) Deserialize(buf []byte) error {
-	if len(buf) < sn76489SerializeSize {
+	if len(buf) < SerializeSize {
 		return errors.New("sn76489: deserialize buffer too small")
 	}
 	if buf[0] != serializeVersion {

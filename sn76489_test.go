@@ -482,7 +482,7 @@ func TestSN76489_SerializeDeserialize(t *testing.T) {
 	// Advance some clocks to get non-trivial internal state
 	chip.GenerateSamples(5000)
 
-	buf := make([]byte, chip.SerializeSize())
+	buf := make([]byte, SerializeSize)
 	if err := chip.Serialize(buf); err != nil {
 		t.Fatal(err)
 	}
@@ -512,7 +512,7 @@ func TestSN76489_SerializeDeserialize(t *testing.T) {
 	}
 
 	// Verify round-trip: serialize both and compare byte slices
-	buf2 := make([]byte, chip2.SerializeSize())
+	buf2 := make([]byte, SerializeSize)
 	if err := chip2.Serialize(buf2); err != nil {
 		t.Fatal(err)
 	}
@@ -540,7 +540,7 @@ func TestSN76489_SerializeDeserializeContinuity(t *testing.T) {
 	chip.GenerateSamples(5000)
 
 	// Serialize state
-	buf := make([]byte, chip.SerializeSize())
+	buf := make([]byte, SerializeSize)
 	if err := chip.Serialize(buf); err != nil {
 		t.Fatal(err)
 	}
@@ -572,7 +572,7 @@ func TestSN76489_SerializeDeserializeContinuity(t *testing.T) {
 // TestSN76489_DeserializeVersionMismatch verifies Deserialize rejects wrong version.
 func TestSN76489_DeserializeVersionMismatch(t *testing.T) {
 	chip := New(3579545, 48000, 800, Sega)
-	buf := make([]byte, chip.SerializeSize())
+	buf := make([]byte, SerializeSize)
 	if err := chip.Serialize(buf); err != nil {
 		t.Fatal(err)
 	}
