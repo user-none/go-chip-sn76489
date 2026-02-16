@@ -999,3 +999,188 @@ func TestSN76489_Reset(t *testing.T) {
 		t.Errorf("After reset: noiseShift expected 0x8000, got 0x%04X", got)
 	}
 }
+
+// clockInternal advances the chip by n internal ticks (n*16 input clocks).
+func clockInternal(chip *SN76489, n int) {
+	for i := 0; i < n*16; i++ {
+		chip.Clock()
+	}
+}
+
+// vol returns the volume table entry for the given 4-bit level.
+func vol(level int) float32 {
+	return GetVolumeTable()[level]
+}
+
+// TestSN76489_NoiseRateCounterReload verifies noise counter reload values
+// for rates 0, 1, and 2, and the noiseToggle half-rate behavior.
+func TestSN76489_NoiseRateCounterReload(t *testing.T) {
+	tests := []struct {
+		name      string
+		rate      uint8
+		reloadVal uint16
+	}{
+		{"rate0", 0, 0x10},
+		{"rate1", 1, 0x20},
+		{"rate2", 2, 0x40},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			chip := New(3579545, 48000, 800, Sega)
+			chip.Write(0xE0 | tc.rate)
+
+			// First tick: counter starts at 0, reload fires
+			clockInternal(chip, 1)
+			if chip.noiseCounter != tc.reloadVal {
+				t.Errorf("noiseCounter = 0x%X, want 0x%X", chip.noiseCounter, tc.reloadVal)
+			}
+			if !chip.noiseToggle {
+				t.Error("noiseToggle should be true after first reload")
+			}
+
+			// Clock reloadVal more ticks: toggle should flip to false
+			clockInternal(chip, int(tc.reloadVal))
+			if chip.noiseToggle {
+				t.Error("noiseToggle should be false after second reload")
+			}
+
+			// Clock reloadVal more ticks: toggle should flip back to true
+			clockInternal(chip, int(tc.reloadVal))
+			if !chip.noiseToggle {
+				t.Error("noiseToggle should be true after third reload")
+			}
+		})
+	}
+}
+
+// TestSN76489_PeriodicNoiseLFSR verifies the full 16-step periodic noise
+// LFSR cycle on a Sega chip: 0x8000 shifts right with bit 0 fed back to bit 15.
+func TestSN76489_PeriodicNoiseLFSR(t *testing.T) {
+	chip := New(3579545, 48000, 800, Sega)
+	chip.Write(0xE0) // Periodic noise, rate 0
+
+	expectedStates := [16]uint16{
+		0x4000, 0x2000, 0x1000, 0x0800, 0x0400, 0x0200, 0x0100, 0x0080,
+		0x0040, 0x0020, 0x0010, 0x0008, 0x0004, 0x0002, 0x0001, 0x8000,
+	}
+	expectedOut := [16]bool{
+		false, false, false, false, false, false, false, false,
+		false, false, false, false, false, false, false, true,
+	}
+
+	for i := 0; i < 16; i++ {
+		if i == 0 {
+			clockInternal(chip, 1) // First LFSR shift at tick 1
+		} else {
+			clockInternal(chip, 32) // Subsequent shifts every 2*reloadVal ticks
+		}
+		if chip.noiseShift != expectedStates[i] {
+			t.Errorf("shift %d: noiseShift = 0x%04X, want 0x%04X", i+1, chip.noiseShift, expectedStates[i])
+		}
+		if chip.noiseOut != expectedOut[i] {
+			t.Errorf("shift %d: noiseOut = %v, want %v", i+1, chip.noiseOut, expectedOut[i])
+		}
+	}
+	if chip.noiseShift != 0x8000 {
+		t.Errorf("after full period: noiseShift = 0x%04X, want 0x8000", chip.noiseShift)
+	}
+}
+
+// TestSN76489_NoiseRate3_ToneRegZero verifies noise rate 3 with toneReg[2]=0
+// uses the toneZeroValue (1 for Sega, 1024 for TI).
+func TestSN76489_NoiseRate3_ToneRegZero(t *testing.T) {
+	tests := []struct {
+		name          string
+		config        Config
+		toneZeroValue uint16
+	}{
+		{"Sega", Sega, 1},
+		{"TI", TI, 1024},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			chip := New(3579545, 48000, 800, tc.config)
+			chip.Write(0xE3) // Noise rate 3 (use tone channel 2)
+			// toneReg[2] defaults to 0
+			clockInternal(chip, 1)
+			if chip.noiseCounter != tc.toneZeroValue {
+				t.Errorf("noiseCounter = %d, want %d", chip.noiseCounter, tc.toneZeroValue)
+			}
+		})
+	}
+}
+
+// TestSN76489_SampleNoiseAudible verifies Sample() returns vol(0) when
+// noiseOut is true with max volume, and 0 when noiseOut is false.
+func TestSN76489_SampleNoiseAudible(t *testing.T) {
+	chip := New(3579545, 48000, 800, Sega)
+	chip.Write(0xE4) // White noise, rate 0
+	chip.Write(0xF0) // Noise volume = 0 (max)
+	chip.SetGain(1.0)
+
+	// Clock until noiseOut becomes true
+	for i := 0; i < 10000; i++ {
+		clockInternal(chip, 1)
+		if chip.noiseOut {
+			break
+		}
+	}
+	if !chip.noiseOut {
+		t.Fatal("noiseOut never became true")
+	}
+
+	got := chip.Sample()
+	want := vol(0)
+	if got != want {
+		t.Errorf("noiseOut=true: Sample() = %f, want %f", got, want)
+	}
+
+	// Clock until noiseOut becomes false
+	for i := 0; i < 10000; i++ {
+		clockInternal(chip, 1)
+		if !chip.noiseOut {
+			break
+		}
+	}
+	if chip.noiseOut {
+		t.Fatal("noiseOut never became false again")
+	}
+
+	got = chip.Sample()
+	if got != 0 {
+		t.Errorf("noiseOut=false: Sample() = %f, want 0", got)
+	}
+}
+
+// TestSN76489_NoiseRate3_ToneRegNonZero verifies noise rate 3 with a non-zero
+// toneReg[2] uses that register value directly as the noise counter reload.
+func TestSN76489_NoiseRate3_ToneRegNonZero(t *testing.T) {
+	chip := New(3579545, 48000, 800, Sega)
+	chip.Write(0xC5) // Channel 2 tone low nibble = 5
+	chip.Write(0x10) // High bits = 0x10, toneReg[2] = 0x105
+	chip.Write(0xE3) // Noise rate 3 (use tone channel 2)
+
+	clockInternal(chip, 1)
+	if chip.noiseCounter != 0x105 {
+		t.Errorf("noiseCounter = 0x%X, want 0x105", chip.noiseCounter)
+	}
+}
+
+// TestSN76489_GetGainAndClocksPerSample covers the trivial getter methods.
+func TestSN76489_GetGainAndClocksPerSample(t *testing.T) {
+	chip := New(3579545, 48000, 800, Sega)
+
+	if got := chip.GetGain(); got != 0.25 {
+		t.Errorf("default gain = %f, want 0.25", got)
+	}
+
+	chip.SetGain(0.75)
+	if got := chip.GetGain(); got != 0.75 {
+		t.Errorf("after SetGain(0.75): gain = %f, want 0.75", got)
+	}
+
+	want := float64(3579545) / float64(48000)
+	if got := chip.ClocksPerSample(); got != want {
+		t.Errorf("ClocksPerSample = %f, want %f", got, want)
+	}
+}
