@@ -189,6 +189,26 @@ need to retain it beyond the next `GenerateSamples`/`Run`/`GetBuffer` call.
 go test -v ./...
 ```
 
+### Golden tests
+
+The test suite includes SHA-256 hash-based golden tests that pin the exact audio
+output of the emulator across both chip variants and all channel types. These are
+synthetic tests (not compared against hardware captures) that guard against
+unintentional regressions.
+
+To update the golden hashes after an intentional change to the emulation:
+
+```
+go test -run Golden -update
+```
+
+This prints new expected sample values and hashes. Paste them into
+`sn76489_golden_test.go`, then verify:
+
+```
+go test -v -count=1 ./...
+```
+
 ## Documentation
 
 Hardware reference documentation is in the `docs/` directory.
