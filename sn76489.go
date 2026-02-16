@@ -175,6 +175,9 @@ func (s *SN76489) Write(value uint8) {
 				s.noiseReg = value & 0x07
 				s.noiseShift = s.lfsrInitial
 			}
+		} else {
+			// Volume data byte: low 4 bits update the volume register
+			s.volume[s.latchedChannel] = value & 0x0F
 		}
 	}
 }
@@ -190,23 +193,30 @@ func (s *SN76489) Clock() {
 
 	// Update tone channels
 	for i := 0; i < 3; i++ {
-		if s.toneCounter[i] > 0 {
-			s.toneCounter[i]--
+		regVal := s.toneReg[i]
+		if regVal == 0 {
+			regVal = s.toneZeroValue
+		}
+		if regVal <= 1 {
+			// Constant +1 output per spec (used for PCM sample playback)
+			s.toneOutput[i] = true
+			s.toneCounter[i] = regVal
 		} else {
-			// Reload counter and flip output
-			if s.toneReg[i] == 0 {
-				s.toneCounter[i] = s.toneZeroValue
-			} else {
-				s.toneCounter[i] = s.toneReg[i]
+			if s.toneCounter[i] > 0 {
+				s.toneCounter[i]--
 			}
-			s.toneOutput[i] = !s.toneOutput[i]
+			if s.toneCounter[i] == 0 {
+				s.toneCounter[i] = regVal
+				s.toneOutput[i] = !s.toneOutput[i]
+			}
 		}
 	}
 
 	// Update noise channel
 	if s.noiseCounter > 0 {
 		s.noiseCounter--
-	} else {
+	}
+	if s.noiseCounter == 0 {
 		// Reload counter
 		rate := s.noiseReg & 0x03
 		switch rate {

@@ -129,6 +129,166 @@ func TestSN76489_VolumeTable(t *testing.T) {
 	}
 }
 
+// TestSN76489_VolumeDataByteWrite verifies that latching a volume register
+// then sending a data byte (bit 7 = 0) updates the volume.
+func TestSN76489_VolumeDataByteWrite(t *testing.T) {
+	chip := New(3579545, 48000, 800, Sega)
+
+	// Latch channel 1 volume to 0x0A
+	chip.Write(0xBA) // 1 01 1 1010 → channel 1, volume, data=0xA
+
+	if got := chip.GetVolume(1); got != 0x0A {
+		t.Errorf("After latch byte: expected volume 0x0A, got 0x%02X", got)
+	}
+
+	// Now send a data byte to update volume (bit 7 = 0)
+	chip.Write(0x03) // 0 0 000011 → low 4 bits = 3
+
+	if got := chip.GetVolume(1); got != 0x03 {
+		t.Errorf("After data byte: expected volume 0x03, got 0x%02X", got)
+	}
+
+	// Verify other channels weren't affected
+	for _, ch := range []int{0, 2, 3} {
+		if got := chip.GetVolume(ch); got != 0x0F {
+			t.Errorf("Channel %d volume should still be 0x0F (silent), got 0x%02X", ch, got)
+		}
+	}
+}
+
+// TestSN76489_ToneCounterPeriod verifies that tone output toggles after exactly
+// N internal ticks (not N+1) when toneReg=N.
+func TestSN76489_ToneCounterPeriod(t *testing.T) {
+	chip := New(3579545, 48000, 800, Sega)
+
+	toneRegVal := uint16(5)
+	// Set tone channel 0 to toneReg=5, max volume
+	chip.Write(0x80 | uint8(toneRegVal)) // Latch channel 0 tone, low nibble = 5
+	chip.Write(0x00)                     // High bits = 0, toneReg = 5
+	chip.Write(0x90)                     // Channel 0 volume = 0 (max)
+
+	initialOutput := chip.toneOutput[0]
+
+	// Clock enough to trigger one internal tick (16 input clocks = 1 internal tick)
+	// Counter starts at 0, so first tick: counter stays 0 (not >0), ==0 → reload to 5, toggle.
+	// Then ticks 2-5: counter goes 5→4→3→2→1. Tick 6: 1→0, ==0 → reload to 5, toggle again.
+	// So output should toggle at tick 1 and tick 1+5=6.
+
+	// First internal tick: counter=0 → reload to 5 and toggle
+	for i := 0; i < 16; i++ {
+		chip.Clock()
+	}
+	if chip.toneOutput[0] == initialOutput {
+		t.Error("Output should have toggled after first internal tick (counter was 0)")
+	}
+	firstToggle := chip.toneOutput[0]
+
+	// Next 4 internal ticks: counter goes 5→4→3→2→1 (no toggle)
+	for tick := 0; tick < 4; tick++ {
+		for i := 0; i < 16; i++ {
+			chip.Clock()
+		}
+		if chip.toneOutput[0] != firstToggle {
+			t.Errorf("Output should NOT have toggled at tick %d (counter decrementing)", tick+2)
+		}
+	}
+
+	// 5th tick after reload: counter 1→0, reload and toggle (this is exactly N=5 ticks)
+	for i := 0; i < 16; i++ {
+		chip.Clock()
+	}
+	if chip.toneOutput[0] == firstToggle {
+		t.Errorf("Output should have toggled after exactly %d internal ticks", toneRegVal)
+	}
+}
+
+// TestSN76489_Sega_ToneRegZeroConstant verifies that toneReg=0 in Sega mode
+// produces constant HIGH output (used for PCM sample playback).
+func TestSN76489_Sega_ToneRegZeroConstant(t *testing.T) {
+	chip := New(3579545, 48000, 800, Sega)
+
+	// Set channel 0 toneReg=0, max volume
+	chip.Write(0x80) // Latch channel 0 tone, low nibble = 0
+	chip.Write(0x00) // High bits = 0, toneReg = 0
+	chip.Write(0x90) // Channel 0 volume = 0 (max)
+
+	// Clock many internal ticks and verify output stays true
+	for tick := 0; tick < 100; tick++ {
+		for i := 0; i < 16; i++ {
+			chip.Clock()
+		}
+		if !chip.toneOutput[0] {
+			t.Fatalf("Sega toneReg=0: output went LOW at tick %d, should be constant HIGH", tick+1)
+		}
+	}
+
+	// Sample should return a constant non-zero value
+	s1 := chip.Sample()
+	for i := 0; i < 16; i++ {
+		chip.Clock()
+	}
+	s2 := chip.Sample()
+	if s1 != s2 {
+		t.Errorf("Sega toneReg=0: Sample() not constant: %f vs %f", s1, s2)
+	}
+	if s1 == 0 {
+		t.Error("Sega toneReg=0: Sample() should be non-zero at max volume")
+	}
+}
+
+// TestSN76489_Sega_ToneRegOneConstant verifies that toneReg=1 in Sega mode
+// also produces constant HIGH output.
+func TestSN76489_Sega_ToneRegOneConstant(t *testing.T) {
+	chip := New(3579545, 48000, 800, Sega)
+
+	// Set channel 0 toneReg=1, max volume
+	chip.Write(0x81) // Latch channel 0 tone, low nibble = 1
+	chip.Write(0x00) // High bits = 0, toneReg = 1
+	chip.Write(0x90) // Channel 0 volume = 0 (max)
+
+	// Clock many internal ticks and verify output stays true
+	for tick := 0; tick < 100; tick++ {
+		for i := 0; i < 16; i++ {
+			chip.Clock()
+		}
+		if !chip.toneOutput[0] {
+			t.Fatalf("Sega toneReg=1: output went LOW at tick %d, should be constant HIGH", tick+1)
+		}
+	}
+}
+
+// TestSN76489_TI_ToneRegZeroNotConstant verifies that TI toneReg=0 (mapped to 1024)
+// still toggles normally and is NOT held constant.
+func TestSN76489_TI_ToneRegZeroNotConstant(t *testing.T) {
+	chip := New(3579545, 48000, 800, TI)
+
+	// Set channel 0 toneReg=0, max volume
+	chip.Write(0x80) // Latch channel 0 tone, low nibble = 0
+	chip.Write(0x00) // High bits = 0, toneReg = 0
+	chip.Write(0x90) // Channel 0 volume = 0 (max)
+
+	// With TI, toneReg=0 maps to 1024. regVal=1024 > 1, so normal counter path.
+	// First tick: counter=0 → reload to 1024, toggle. Then 1024 more ticks to toggle again.
+	// After 1+1024 = 1025 internal ticks, output should have toggled twice (back to initial).
+
+	// Clock 1 internal tick to get first toggle
+	for i := 0; i < 16; i++ {
+		chip.Clock()
+	}
+	afterFirst := chip.toneOutput[0]
+
+	// Clock 1024 more internal ticks to get second toggle
+	for tick := 0; tick < 1024; tick++ {
+		for i := 0; i < 16; i++ {
+			chip.Clock()
+		}
+	}
+
+	if chip.toneOutput[0] == afterFirst {
+		t.Error("TI toneReg=0: output should toggle (mapped to 1024), not be held constant")
+	}
+}
+
 // TestSN76489_ClockDivider tests that input clock is divided by 16
 func TestSN76489_ClockDivider(t *testing.T) {
 	chip := New(3579545, 48000, 800, Sega)
