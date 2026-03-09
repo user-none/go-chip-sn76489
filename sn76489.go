@@ -15,6 +15,7 @@ type Config struct {
 	LFSRBits       int    // 15 for TI, 16 for Sega
 	WhiteNoiseTaps uint16 // Bitmask: 0x0003 for TI (bits 0,1), 0x0009 for Sega (bits 0,3)
 	ToneZero       ToneZero
+	LFSRInit       uint16 // Custom LFSR seed; 0 uses default (1 << (LFSRBits-1))
 }
 
 // Sega is the config for the Sega variant (SMS/GG/Genesis).
@@ -89,6 +90,9 @@ type SN76489 struct {
 func New(clockFreq int, sampleRate int, bufferSize int, config Config) *SN76489 {
 	feedbackShift := uint(config.LFSRBits - 1)
 	lfsrInitial := uint16(1) << feedbackShift
+	if config.LFSRInit != 0 {
+		lfsrInitial = config.LFSRInit
+	}
 	toneZeroValue := uint16(1)
 	if config.ToneZero == ToneZeroAs1024 {
 		toneZeroValue = 1024
@@ -396,4 +400,14 @@ func GetVolumeTable() []float32 {
 // GetNoiseShift returns the current LFSR state (for testing)
 func (s *SN76489) GetNoiseShift() uint16 {
 	return s.noiseShift
+}
+
+// GetToneOutput returns the current output state for the given tone channel (0-2).
+func (s *SN76489) GetToneOutput(ch int) bool {
+	return s.toneOutput[ch]
+}
+
+// GetNoiseOutput returns the current noise channel output state.
+func (s *SN76489) GetNoiseOutput() bool {
+	return s.noiseOut
 }

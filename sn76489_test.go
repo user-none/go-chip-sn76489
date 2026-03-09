@@ -1166,6 +1166,86 @@ func TestSN76489_NoiseRate3_ToneRegNonZero(t *testing.T) {
 	}
 }
 
+// TestSN76489_GetToneOutput verifies GetToneOutput returns correct state after clocking
+func TestSN76489_GetToneOutput(t *testing.T) {
+	chip := New(3579545, 48000, 800, Sega)
+
+	// Set channel 0 to toneReg=1 (constant HIGH), max volume
+	chip.Write(0x81) // Channel 0 tone = 1
+	chip.Write(0x90) // Channel 0 volume = 0 (max)
+
+	// Clock to activate
+	clockInternal(chip, 1)
+
+	if !chip.GetToneOutput(0) {
+		t.Error("GetToneOutput(0) should be true for toneReg=1 after clocking")
+	}
+
+	// Channels 1 and 2 should still be in initial state
+	// toneReg=0 maps to 1 (Sega), so constant HIGH after first tick
+	// but they haven't been set up with volume, just check accessor works
+	_ = chip.GetToneOutput(1)
+	_ = chip.GetToneOutput(2)
+}
+
+// TestSN76489_GetNoiseOutput verifies GetNoiseOutput returns correct state after clocking
+func TestSN76489_GetNoiseOutput(t *testing.T) {
+	chip := New(3579545, 48000, 800, Sega)
+	chip.Write(0xE4) // White noise, rate 0
+	chip.Write(0xF0) // Noise volume = 0 (max)
+
+	// Initially noiseOut should be false
+	if chip.GetNoiseOutput() {
+		t.Error("GetNoiseOutput() should be false initially")
+	}
+
+	// Clock until noiseOut becomes true
+	for i := 0; i < 10000; i++ {
+		clockInternal(chip, 1)
+		if chip.GetNoiseOutput() {
+			return
+		}
+	}
+	t.Error("GetNoiseOutput() never became true")
+}
+
+// TestSN76489_LFSRInit_Custom verifies LFSRInit=0xFFFE produces that seed
+func TestSN76489_LFSRInit_Custom(t *testing.T) {
+	config := Config{
+		LFSRBits:       16,
+		WhiteNoiseTaps: 0x0009,
+		ToneZero:       ToneZeroAsOne,
+		LFSRInit:       0xFFFE,
+	}
+	chip := New(3579545, 48000, 800, config)
+
+	if got := chip.GetNoiseShift(); got != 0xFFFE {
+		t.Errorf("LFSRInit=0xFFFE: GetNoiseShift() = 0x%04X, want 0xFFFE", got)
+	}
+
+	// After reset, should return to the custom seed
+	chip.Reset()
+	if got := chip.GetNoiseShift(); got != 0xFFFE {
+		t.Errorf("After Reset with LFSRInit=0xFFFE: GetNoiseShift() = 0x%04X, want 0xFFFE", got)
+	}
+}
+
+// TestSN76489_LFSRInit_Default verifies LFSRInit=0 uses default seed
+func TestSN76489_LFSRInit_Default(t *testing.T) {
+	// Sega config has LFSRInit=0 (default)
+	chip := New(3579545, 48000, 800, Sega)
+
+	if got := chip.GetNoiseShift(); got != 0x8000 {
+		t.Errorf("LFSRInit=0 (Sega default): GetNoiseShift() = 0x%04X, want 0x8000", got)
+	}
+
+	// TI config
+	chip2 := New(3579545, 48000, 800, TI)
+	if got := chip2.GetNoiseShift(); got != 0x4000 {
+		t.Errorf("LFSRInit=0 (TI default): GetNoiseShift() = 0x%04X, want 0x4000", got)
+	}
+}
+
 // TestSN76489_GetGainAndClocksPerSample covers the trivial getter methods.
 func TestSN76489_GetGainAndClocksPerSample(t *testing.T) {
 	chip := New(3579545, 48000, 800, Sega)
